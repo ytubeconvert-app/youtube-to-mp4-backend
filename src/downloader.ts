@@ -511,11 +511,11 @@ export async function executeConversionJob(job: Job) {
   if (cookiesPath) {
     console.log(`[JOB ${job.id}] Authenticating YouTube download with cookies: ${cookiesPath}`);
     args.push('--cookies', cookiesPath);
-    // tv_embedded and tv clients bypass the strict Web PO token bot verification on datacenter IPs
-    args.push('--extractor-args', 'youtube:player_client=tv_embedded,tv,ios,web');
+    // Use web, web_embedded, ios, mweb (tv clients trigger 'page needs to be reloaded' when cookies are passed)
+    args.push('--extractor-args', 'youtube:player_client=web,web_embedded,ios,mweb');
   } else {
-    // On datacenter / cloud IPs without cookies, try android_vr, tv_downgraded, tv_embedded, ios, mweb
-    args.push('--extractor-args', 'youtube:player_client=android_vr,tv_downgraded,tv_embedded,ios,mweb');
+    // On datacenter / cloud IPs without cookies, try android_vr, ios, mweb, web
+    args.push('--extractor-args', 'youtube:player_client=android_vr,ios,mweb,web');
   }
 
   // Optional proxy routing (residential/datacenter proxy bypass)
@@ -534,9 +534,9 @@ export async function executeConversionJob(job: Job) {
     }
   } else {
     if (ffmpegAvailable) {
-      // High-resolution multi-track merge with FFmpeg
+      // High-resolution multi-track merge with FFmpeg with fallback to standard pre-merged formats
       args.push(
-        '-f', `bestvideo[height<=${heightLimit}]+bestaudio/best[height<=${heightLimit}]/best`,
+        '-f', `bestvideo[height<=${heightLimit}]+bestaudio/best[height<=${heightLimit}]/22/18/best`,
         '--merge-output-format', 'mp4'
       );
     } else {
