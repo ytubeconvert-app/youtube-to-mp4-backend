@@ -79,8 +79,8 @@ app.get(['/', '/api', '/health', '/api/health'], (req, res) => {
   });
 });
 
-// 2. Fetch Video Metadata: POST /api/info
-app.post('/api/info', async (req, res) => {
+// 2. Fetch Video Metadata: POST /api/info and /info
+app.post(['/api/info', '/info'], async (req, res) => {
   if (!checkRateLimit(req, 60, 60)) {
     return res.status(429).json({ error: 'Too many requests. Please wait a minute before querying again.' });
   }
@@ -103,8 +103,8 @@ app.post('/api/info', async (req, res) => {
   }
 });
 
-// 3. Start Conversion: POST /api/convert
-app.post('/api/convert', async (req, res) => {
+// 3. Start Conversion: POST /api/convert and /convert
+app.post(['/api/convert', '/convert'], async (req, res) => {
   if (!checkRateLimit(req, 20, 60)) {
     return res.status(429).json({ error: 'Conversion limit reached. Please wait a moment before starting another job.' });
   }
@@ -138,8 +138,8 @@ app.post('/api/convert', async (req, res) => {
   });
 });
 
-// 4. Job Status: GET /api/status/:jobId
-app.get('/api/status/:jobId', (req, res) => {
+// 4. Job Status: GET /api/status/:jobId and /status/:jobId
+app.get(['/api/status/:jobId', '/status/:jobId'], (req, res) => {
   const { jobId } = req.params;
   const job = queue.getJob(jobId);
 
@@ -157,8 +157,8 @@ app.get('/api/status/:jobId', (req, res) => {
   });
 });
 
-// 5. Download Stream: GET /api/download/:jobId
-app.get('/api/download/:jobId', (req, res) => {
+// 5. Download Stream: GET /api/download/:jobId and /download/:jobId
+app.get(['/api/download/:jobId', '/download/:jobId'], (req, res) => {
   const { jobId } = req.params;
   const job = queue.getJob(jobId);
 
@@ -201,8 +201,8 @@ app.get('/api/download/:jobId', (req, res) => {
   }
 });
 
-// 6. Contact Form Endpoint: POST /api/contact
-app.post('/api/contact', (req, res) => {
+// 6. Contact Form Endpoint: POST /api/contact and /contact
+app.post(['/api/contact', '/contact'], (req, res) => {
   const { name, email, message, subject } = req.body;
   if (!name || !email || !message) {
     return res.status(400).json({ error: 'Name, email, and message are required.' });

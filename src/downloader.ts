@@ -134,9 +134,13 @@ export function resolveCookiesPath(): string | null {
   }
 
   // 1. From environment variable content (ideal for Render dashboard where uploading files isn't possible)
-  const envContent = process.env.YT_COOKIES_CONTENT || process.env.YOUTUBE_COOKIES;
+  let envContent = process.env.YT_COOKIES_CONTENT || process.env.YOUTUBE_COOKIES;
   if (envContent && envContent.trim().length > 10) {
     try {
+      // Normalize literal escaped newlines if pasted into cloud dashboard
+      if (envContent.includes('\\n') && !envContent.includes('\n')) {
+        envContent = envContent.replace(/\\n/g, '\n');
+      }
       if (!fs.existsSync(TEMP_DIR)) {
         fs.mkdirSync(TEMP_DIR, { recursive: true });
       }
@@ -467,6 +471,13 @@ export async function executeConversionJob(job: Job) {
   } else {
     // On datacenter / cloud IPs without cookies, prioritizing iOS client bypasses bot challenges
     args.push('--extractor-args', 'youtube:player_client=ios,web,mweb');
+  }
+
+  // Optional proxy routing (residential/datacenter proxy bypass)
+  const proxy = process.env.YT_PROXY || process.env.PROXY || process.env.HTTP_PROXY || process.env.HTTPS_PROXY;
+  if (proxy && proxy.trim().length > 0) {
+    console.log(`[JOB ${job.id}] Routing through configured proxy.`);
+    args.push('--proxy', proxy.trim());
   }
 
   if (isAudio) {
