@@ -240,6 +240,8 @@ export function resolveProxyUrl(): string | null {
     if (!p.startsWith('http://') && !p.startsWith('https://') && !p.startsWith('socks5://')) {
       p = `http://${p}`;
     }
+    // Strip trailing slashes (essential so Python urllib doesn't fail parsing the port)
+    p = p.replace(/\/+$/, '').trim();
     return p;
   }
   return null;
@@ -643,7 +645,13 @@ export async function executeConversionJob(job: Job) {
       } else if (stderrOutput.includes('Postprocessing') && stderrOutput.includes('ffmpeg')) {
         cleanErr = 'FFmpeg is downloading in background for 1080p/4K merging. Please retry in 10 seconds, or select 720p for instant download.';
       } else if (stderrOutput) {
-        cleanErr = stderrOutput.slice(-150).trim();
+        const lines = stderrOutput.split('\n').map(l => l.trim()).filter(Boolean);
+        const errorLine = lines.reverse().find(l => 
+          (l.startsWith('ERROR:') || l.includes('Error:') || l.includes('ProxyError') || l.includes('407') || l.includes('403') || l.includes('ValueError')) &&
+          !l.includes('filling out the appropriate issue template') &&
+          !l.includes('Confirm you are on the latest version')
+        );
+        cleanErr = errorLine || stderrOutput.slice(-300).trim();
       }
 
       queue.updateJob(job.id, {
