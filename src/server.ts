@@ -66,13 +66,25 @@ app.get(['/', '/api', '/health', '/api/health'], (req, res) => {
   let cookieStatus = 'not_found';
   let cookieEntries = 0;
   let hasLogin = false;
+  let detectedCookieNames: string[] = [];
 
   if (cookiesPath && fs.existsSync(cookiesPath)) {
     try {
       const content = fs.readFileSync(cookiesPath, 'utf8');
-      cookieEntries = content.split('\n').filter(l => l.trim().length > 0 && !l.startsWith('#')).length;
-      hasLogin = content.includes('LOGIN_INFO') || content.includes('SAPISID') || content.includes('SID') || content.includes('SSID');
-      cookieStatus = hasLogin ? 'valid_authenticated' : 'present_missing_login';
+      const lines = content.split('\n').filter(l => l.trim().length > 0 && !l.startsWith('#'));
+      cookieEntries = lines.length;
+      const cookieNames = new Set(lines.map(l => {
+        const parts = l.split('\t');
+        return parts.length >= 6 ? parts[5].trim() : '';
+      }).filter(Boolean));
+
+      detectedCookieNames = Array.from(cookieNames);
+      hasLogin = cookieNames.has('LOGIN_INFO') ||
+                 cookieNames.has('SAPISID') ||
+                 cookieNames.has('__Secure-3PSID') ||
+                 cookieNames.has('__Secure-1PSID') ||
+                 cookieNames.has('SID');
+      cookieStatus = hasLogin ? 'valid_authenticated' : 'guest_session_missing_login';
     } catch (e: any) {
       cookieStatus = `error: ${e.message}`;
     }
@@ -89,6 +101,7 @@ app.get(['/', '/api', '/health', '/api/health'], (req, res) => {
       status: cookieStatus,
       entries: cookieEntries,
       hasLoginSession: hasLogin,
+      names: detectedCookieNames,
       detectedPath: cookiesPath || null
     },
     endpoints: {

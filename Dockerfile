@@ -10,8 +10,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     curl \
     && rm -rf /var/lib/apt/lists/*
 
-# Install yt-dlp via pip with latest upstream release
-RUN pip3 install --no-cache-dir --break-system-packages --upgrade yt-dlp
+# Install yt-dlp with EJS dependencies (solves YouTube JavaScript challenges)
+RUN pip3 install --no-cache-dir --break-system-packages --upgrade "yt-dlp[default]" yt-dlp-ejs
 
 WORKDIR /app
 

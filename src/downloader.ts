@@ -504,15 +504,18 @@ export async function executeConversionJob(job: Job) {
     '--no-cache-dir',
     `--max-filesize`, `${MAX_SIZE_MB}M`,
     '--no-check-certificates',
-    '--user-agent', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36'
+    '--sleep-requests', '1',
+    '--js-runtimes', 'node'
   ];
 
   if (cookiesPath) {
     console.log(`[JOB ${job.id}] Authenticating YouTube download with cookies: ${cookiesPath}`);
     args.push('--cookies', cookiesPath);
+    // tv_embedded and tv clients bypass the strict Web PO token bot verification on datacenter IPs
+    args.push('--extractor-args', 'youtube:player_client=tv_embedded,tv,ios,web');
   } else {
-    // On datacenter / cloud IPs without cookies, try android_vr, tv_downgraded, ios, mweb
-    args.push('--extractor-args', 'youtube:player_client=android_vr,tv_downgraded,ios,mweb');
+    // On datacenter / cloud IPs without cookies, try android_vr, tv_downgraded, tv_embedded, ios, mweb
+    args.push('--extractor-args', 'youtube:player_client=android_vr,tv_downgraded,tv_embedded,ios,mweb');
   }
 
   // Optional proxy routing (residential/datacenter proxy bypass)
@@ -607,6 +610,8 @@ export async function executeConversionJob(job: Job) {
         } else {
           cleanErr = 'YouTube requires bot verification for this cloud IP. Please provide cookies in Render (via Secret File cookies.txt or YT_COOKIES_CONTENT env var), or try another video.';
         }
+      } else if (stderrOutput.includes('The page needs to be reloaded')) {
+        cleanErr = 'YouTube issued a dynamic page verification challenge. The EJS solver will re-authenticate; please retry now or try another video.';
       } else if (stderrOutput.includes('Private video')) {
         cleanErr = 'This video is private or unavailable.';
       } else if (stderrOutput.includes('Postprocessing') && stderrOutput.includes('ffmpeg')) {
