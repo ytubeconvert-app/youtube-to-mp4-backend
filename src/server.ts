@@ -5,7 +5,7 @@ import fs from 'node:fs';
 import crypto from 'node:crypto';
 import dotenv from 'dotenv';
 import { startAutoCleaner } from './cleaner.js';
-import { fetchVideoMetadata, executeConversionJob, ensureYtDlpBinary, hasFfmpeg } from './downloader.js';
+import { fetchVideoMetadata, executeConversionJob, ensureYtDlpBinary, hasFfmpeg, resolveCookiesPath } from './downloader.js';
 import { validateAndSanitizeYouTubeUrl } from './validator.js';
 import { queue } from './queue.js';
 
@@ -62,6 +62,22 @@ function checkRateLimit(req: Request, maxRequests = 30, windowSeconds = 60): boo
 
 // 1. Health & Root Info Endpoints (prevents 404 on base URL)
 app.get(['/', '/api', '/health', '/api/health'], (req, res) => {
+  const cookiesPath = resolveCookiesPath();
+  let cookieStatus = 'not_found';
+  let cookieEntries = 0;
+  let hasLogin = false;
+
+  if (cookiesPath && fs.existsSync(cookiesPath)) {
+    try {
+      const content = fs.readFileSync(cookiesPath, 'utf8');
+      cookieEntries = content.split('\n').filter(l => l.trim().length > 0 && !l.startsWith('#')).length;
+      hasLogin = content.includes('LOGIN_INFO') || content.includes('SAPISID') || content.includes('SID') || content.includes('SSID');
+      cookieStatus = hasLogin ? 'valid_authenticated' : 'present_missing_login';
+    } catch (e: any) {
+      cookieStatus = `error: ${e.message}`;
+    }
+  }
+
   res.json({
     status: 'ok',
     service: 'YouTube to MP4 Backend API',
@@ -69,6 +85,12 @@ app.get(['/', '/api', '/health', '/api/health'], (req, res) => {
     node: process.version,
     uptime: Math.floor(process.uptime()),
     port: PORT,
+    cookies: {
+      status: cookieStatus,
+      entries: cookieEntries,
+      hasLoginSession: hasLogin,
+      detectedPath: cookiesPath || null
+    },
     endpoints: {
       health: 'GET /health',
       info: 'POST /api/info',
