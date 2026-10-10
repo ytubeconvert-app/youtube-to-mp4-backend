@@ -106,7 +106,11 @@ app.get(['/', '/api', '/health', '/api/health'], (req, res) => {
     port: PORT,
     proxy: {
       configured: !!proxyUrl,
-      status: proxyStatus
+      status: proxyStatus,
+      isDatacenter: !!proxyUrl && (proxyUrl.includes('webshare.io') || proxyUrl.includes('render') || proxyUrl.includes('aws')),
+      typeNotice: proxyUrl && proxyUrl.includes('webshare.io')
+        ? 'Webshare free tier routes through datacenter IPs which Google monitors. Residential proxies are recommended for 100% bypass of YouTube bot challenges.'
+        : undefined
     },
     cookies: {
       status: cookieStatus,

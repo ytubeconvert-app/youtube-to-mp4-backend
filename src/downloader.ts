@@ -486,8 +486,57 @@ export async function fetchVideoMetadata(url: string) {
   };
 }
 
+// Helper: Run a single yt-dlp spawn attempt
+function runSpawnAttempt(
+  ytDlpBin: string,
+  args: string[],
+  outputFilePath: string,
+  job: Job
+): Promise<{ success: boolean; stderr: string; code: number | null }> {
+  return new Promise((resolve) => {
+    let stderrOutput = '';
+    let hasResolved = false;
+
+    let child;
+    try {
+      child = spawn(ytDlpBin, args, { windowsHide: true });
+    } catch (err: any) {
+      return resolve({ success: false, stderr: `Spawn error: ${err.message}`, code: -1 });
+    }
+
+    child.stdout.on('data', (chunk) => {
+      const text = chunk.toString();
+      const match = text.match(/\[download\]\s+([\d\.]+)%/);
+      if (match) {
+        const percent = parseFloat(match[1]);
+        const normalized = Math.min(85, Math.floor(10 + percent * 0.75));
+        queue.updateJob(job.id, { progress: normalized, message: `Downloading: ${percent.toFixed(0)}%` });
+      } else if (text.includes('[Merger]') || text.includes('[ExtractAudio]')) {
+        queue.updateJob(job.id, { progress: 90, message: 'Finalizing media file...' });
+      }
+    });
+
+    child.stderr.on('data', (chunk) => {
+      stderrOutput += chunk.toString();
+    });
+
+    child.on('close', (code) => {
+      if (hasResolved) return;
+      hasResolved = true;
+      const success = (code === 0 && fs.existsSync(outputFilePath) && fs.statSync(outputFilePath).size > 0);
+      resolve({ success, stderr: stderrOutput, code });
+    });
+
+    child.on('error', (err: any) => {
+      if (hasResolved) return;
+      hasResolved = true;
+      resolve({ success: false, stderr: err.message, code: err.code === 'ENOENT' ? -4058 : -1 });
+    });
+  });
+}
+
 // -------------------------------------------------------------------
-// Execute Conversion Job with Direct Stream Fallback
+// Execute Conversion Job with Multi-Strategy Fallback Engine
 // -------------------------------------------------------------------
 export async function executeConversionJob(job: Job) {
   queue.incrementActive();
@@ -524,157 +573,168 @@ export async function executeConversionJob(job: Job) {
   if (job.format === '360p') heightLimit = 360;
 
   const cookiesPath = resolveCookiesPath();
+  const proxy = resolveProxyUrl();
 
-  const args: string[] = [
+  // Base arguments common to all conversion attempts
+  const baseArgs: string[] = [
     '--no-playlist',
     '--newline',
     '--no-cache-dir',
-    `--max-filesize`, `${MAX_SIZE_MB}M`,
+    '--max-filesize', `${MAX_SIZE_MB}M`,
     '--no-check-certificates',
     '--sleep-requests', '1',
     '--js-runtimes', 'node'
   ];
 
-  if (cookiesPath) {
-    console.log(`[JOB ${job.id}] Authenticating YouTube download with cookies: ${cookiesPath}`);
-    args.push('--cookies', cookiesPath);
-    // Use web, web_embedded, ios, mweb (tv clients trigger 'page needs to be reloaded' when cookies are passed)
-    args.push('--extractor-args', 'youtube:player_client=web,web_embedded,ios,mweb');
-  } else {
-    // On datacenter / cloud IPs without cookies, try android_vr, ios, mweb, web
-    args.push('--extractor-args', 'youtube:player_client=android_vr,ios,mweb,web');
-  }
-
-  // Proxy routing (Webshare, Smartproxy, residential proxies)
-  const proxy = resolveProxyUrl();
-  if (proxy) {
-    const masked = proxy.replace(/:\/\/[^:]+:([^@]+)@/, '://***:***@');
-    console.log(`[JOB ${job.id}] Routing YouTube traffic through proxy: ${masked}`);
-    args.push('--proxy', proxy);
-  }
-
   if (isAudio) {
     if (ffmpegAvailable) {
-      args.push('-x', '--audio-format', 'mp3', '--audio-quality', '0');
+      baseArgs.push('-x', '--audio-format', 'mp3', '--audio-quality', '0');
     } else {
-      // Direct audio stream without transcoding if FFmpeg is not present
-      args.push('-f', 'ba[ext=m4a]/ba/best');
+      baseArgs.push('-f', 'ba[ext=m4a]/ba/best');
     }
   } else {
     if (ffmpegAvailable) {
-      // High-resolution multi-track merge with FFmpeg with fallback to standard pre-merged formats
-      args.push(
+      baseArgs.push(
         '-f', `bestvideo[height<=${heightLimit}]+bestaudio/best[height<=${heightLimit}]/22/18/best`,
         '--merge-output-format', 'mp4'
       );
     } else {
-      // Guaranteed single pre-merged stream: Format 22 (720p) or 18 (360p) requires ZERO merging/FFmpeg
       console.log(`[JOB ${job.id}] Notice: Utilizing standalone pre-merged MP4 stream.`);
-      args.push('-f', '22/18/b[ext=mp4]/best[ext=mp4]/best');
+      baseArgs.push('-f', '22/18/b[ext=mp4]/best[ext=mp4]/best');
     }
   }
 
   if (ffmpegLocation) {
-    args.push('--ffmpeg-location', ffmpegLocation);
+    baseArgs.push('--ffmpeg-location', ffmpegLocation);
   }
 
-  args.push('-o', outputFilePath, job.url);
-
-  console.log(`[JOB ${job.id}] Spawning: ${ytDlpBin} for ${job.videoId} (${job.format})`);
-
-  let stderrOutput = '';
-  let hasFailed = false;
-
-  let child;
-  try {
-    child = spawn(ytDlpBin, args, { windowsHide: true });
-  } catch (spawnErr: any) {
-    queue.decrementActive();
-    queue.updateJob(job.id, {
-      status: 'failed',
-      error: `Failed to launch conversion engine (${spawnErr.message}).`
-    });
-    return;
+  // Multi-tier bypass strategies:
+  // 1. Authenticated session (if cookies provided) with mobile-first clients
+  // 2. Anonymous Mobile client (iOS/Android) without desktop cookies (avoids session poisoning on datacenter IPs)
+  // 3. Embedded / VR device client
+  interface Strategy {
+    name: string;
+    useCookies: boolean;
+    playerClients: string;
   }
 
-  child.stdout.on('data', (chunk) => {
-    const text = chunk.toString();
-    const match = text.match(/\[download\]\s+([\d\.]+)%/);
-    if (match) {
-      const percent = parseFloat(match[1]);
-      const normalized = Math.min(85, Math.floor(10 + percent * 0.75));
-      queue.updateJob(job.id, { progress: normalized, message: `Downloading: ${percent.toFixed(0)}%` });
-    } else if (text.includes('[Merger]') || text.includes('[ExtractAudio]')) {
-      queue.updateJob(job.id, { progress: 90, message: 'Finalizing media file...' });
-    }
+  const strategies: Strategy[] = [];
+
+  if (cookiesPath) {
+    strategies.push({
+      name: 'Authenticated Mobile & Web Session',
+      useCookies: true,
+      playerClients: 'ios,android,mweb,web'
+    });
+  }
+
+  strategies.push({
+    name: 'Anonymous Mobile App Client (iOS/Android Native)',
+    useCookies: false,
+    playerClients: 'ios,android,mweb'
   });
 
-  child.stderr.on('data', (chunk) => {
-    const text = chunk.toString();
-    stderrOutput += text;
+  strategies.push({
+    name: 'Embedded VR Device Client',
+    useCookies: false,
+    playerClients: 'android_vr,web_embedded'
   });
 
-  child.on('close', (code) => {
-    queue.decrementActive();
-    if (hasFailed) return;
+  let finalSuccess = false;
+  let lastStderr = '';
+  let lastCode: number | null = -1;
 
-    if (code === 0 && fs.existsSync(outputFilePath)) {
+  for (let i = 0; i < strategies.length; i++) {
+    const strat = strategies[i];
+    console.log(`[JOB ${job.id}] Trying conversion strategy ${i + 1}/${strategies.length}: ${strat.name}`);
+
+    if (i > 0) {
       queue.updateJob(job.id, {
-        status: 'completed',
-        progress: 100,
-        outputPath: outputFilePath,
-        message: 'Conversion completed successfully!',
-        completedAt: Date.now()
+        progress: 15 + i * 5,
+        message: `Applying bypass strategy ${i + 1}/${strategies.length} (${strat.name})...`
       });
-      console.log(`[JOB ${job.id}] Successfully completed. Output saved at: ${outputFilePath}`);
-    } else {
-      let cleanErr = 'Conversion failed. Please try a different format or video.';
-      if (code === -4058 || (code !== 0 && !fs.existsSync(outputFilePath) && !stderrOutput)) {
-        cleanErr = 'Conversion engine was initializing (Exit code -4058). Please retry now.';
-      } else if (stderrOutput.includes('Sign in to confirm')) {
-        const hasCookies = !!resolveCookiesPath();
-        if (hasCookies) {
-          cleanErr = 'YouTube rejected this session (cookies may be expired or missing LOGIN_INFO). Please export fresh cookies while signed in to YouTube, or try another video.';
-        } else {
-          cleanErr = 'YouTube requires bot verification for this cloud IP. Please provide cookies in Render (via Secret File cookies.txt or YT_COOKIES_CONTENT env var), or try another video.';
-        }
-      } else if (stderrOutput.includes('The page needs to be reloaded')) {
-        cleanErr = 'YouTube issued a dynamic page verification challenge. The EJS solver will re-authenticate; please retry now or try another video.';
-      } else if (stderrOutput.includes('Private video')) {
-        cleanErr = 'This video is private or unavailable.';
-      } else if (stderrOutput.includes('Postprocessing') && stderrOutput.includes('ffmpeg')) {
-        cleanErr = 'FFmpeg is downloading in background for 1080p/4K merging. Please retry in 10 seconds, or select 720p for instant download.';
-      } else if (stderrOutput) {
-        const lines = stderrOutput.split('\n').map(l => l.trim()).filter(Boolean);
-        const errorLine = lines.reverse().find(l => 
-          (l.startsWith('ERROR:') || l.includes('Error:') || l.includes('ProxyError') || l.includes('407') || l.includes('403') || l.includes('ValueError')) &&
-          !l.includes('filling out the appropriate issue template') &&
-          !l.includes('Confirm you are on the latest version')
-        );
-        cleanErr = errorLine || stderrOutput.slice(-300).trim();
-      }
-
-      queue.updateJob(job.id, {
-        status: 'failed',
-        error: cleanErr,
-        message: 'Conversion process failed.'
-      });
-      console.error(`[JOB ${job.id}] Failed with exit code ${code}: ${cleanErr}`);
     }
-  });
 
-  child.on('error', (err: any) => {
-    queue.decrementActive();
-    hasFailed = true;
-    const isNotFound = err.code === 'ENOENT' || err.errno === -4058;
-    const errorMsg = isNotFound
-      ? `Conversion engine (${ytDlpBin}) was not found (Exit code -4058). Please retry in a few seconds.`
-      : `Process error: ${err.message}`;
+    const currentArgs = [...baseArgs];
+
+    if (strat.useCookies && cookiesPath) {
+      console.log(`[JOB ${job.id}] Authenticating YouTube download with cookies: ${cookiesPath}`);
+      currentArgs.push('--cookies', cookiesPath);
+    }
+
+    currentArgs.push('--extractor-args', `youtube:player_client=${strat.playerClients}`);
+
+    if (proxy) {
+      const masked = proxy.replace(/:\/\/[^:]+:([^@]+)@/, '://***:***@');
+      console.log(`[JOB ${job.id}] Routing YouTube traffic through proxy: ${masked}`);
+      currentArgs.push('--proxy', proxy);
+    }
+
+    currentArgs.push('-o', outputFilePath, job.url);
+
+    console.log(`[JOB ${job.id}] Spawning yt-dlp for ${job.videoId} (${job.format}) with ${strat.playerClients} (cookies: ${strat.useCookies})`);
+
+    const result = await runSpawnAttempt(ytDlpBin, currentArgs, outputFilePath, job);
+    if (result.success) {
+      finalSuccess = true;
+      console.log(`[JOB ${job.id}] Strategy ${i + 1} (${strat.name}) succeeded!`);
+      break;
+    }
+
+    lastStderr = result.stderr;
+    lastCode = result.code;
+    console.warn(`[JOB ${job.id}] Strategy ${i + 1} failed (exit code ${lastCode}): ${result.stderr.slice(-200).trim()}`);
+
+    // Stop early if video is permanently unavailable
+    if (lastStderr.includes('Private video') || lastStderr.includes('Video unavailable') || lastStderr.includes('This video is not available')) {
+      break;
+    }
+
+    // Clean up partial output if any was left behind
+    try {
+      if (fs.existsSync(outputFilePath)) fs.unlinkSync(outputFilePath);
+    } catch {}
+  }
+
+  queue.decrementActive();
+
+  if (finalSuccess && fs.existsSync(outputFilePath)) {
+    queue.updateJob(job.id, {
+      status: 'completed',
+      progress: 100,
+      outputPath: outputFilePath,
+      message: 'Conversion completed successfully!',
+      completedAt: Date.now()
+    });
+    console.log(`[JOB ${job.id}] Successfully completed. Output saved at: ${outputFilePath}`);
+  } else {
+    let cleanErr = 'Conversion failed. Please try a different format or video.';
+    if (lastCode === -4058 || (lastCode !== 0 && !fs.existsSync(outputFilePath) && !lastStderr)) {
+      cleanErr = 'Conversion engine was initializing (Exit code -4058). Please retry now.';
+    } else if (lastStderr.includes('Sign in to confirm')) {
+      cleanErr = 'YouTube requires bot verification for cloud IPs. Cloud datacenter IPs (like Render or free Webshare) are challenged by Google. A residential proxy or PO token is required for this video.';
+    } else if (lastStderr.includes('The page needs to be reloaded')) {
+      cleanErr = 'YouTube issued a dynamic page verification challenge. The EJS solver will re-authenticate; please retry now or try another video.';
+    } else if (lastStderr.includes('Private video')) {
+      cleanErr = 'This video is private or unavailable.';
+    } else if (lastStderr.includes('Postprocessing') && lastStderr.includes('ffmpeg')) {
+      cleanErr = 'FFmpeg is downloading in background for 1080p/4K merging. Please retry in 10 seconds, or select 720p for instant download.';
+    } else if (lastStderr) {
+      const lines = lastStderr.split('\n').map(l => l.trim()).filter(Boolean);
+      const errorLine = lines.reverse().find(l => 
+        (l.startsWith('ERROR:') || l.includes('Error:') || l.includes('ProxyError') || l.includes('407') || l.includes('403') || l.includes('ValueError')) &&
+        !l.includes('filling out the appropriate issue template') &&
+        !l.includes('Confirm you are on the latest version')
+      );
+      cleanErr = errorLine || lastStderr.slice(-300).trim();
+    }
 
     queue.updateJob(job.id, {
       status: 'failed',
-      error: errorMsg
+      error: cleanErr,
+      message: 'Conversion process failed.'
     });
-    console.error(`[JOB ${job.id}] Error spawning yt-dlp:`, errorMsg);
-  });
+    console.error(`[JOB ${job.id}] All conversion strategies exhausted. Exit code ${lastCode}: ${cleanErr}`);
+  }
 }
+
