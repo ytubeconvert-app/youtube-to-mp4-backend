@@ -5,7 +5,7 @@ import fs from 'node:fs';
 import crypto from 'node:crypto';
 import dotenv from 'dotenv';
 import { startAutoCleaner } from './cleaner.js';
-import { fetchVideoMetadata, executeConversionJob, ensureYtDlpBinary, hasFfmpeg, resolveCookiesPath } from './downloader.js';
+import { fetchVideoMetadata, executeConversionJob, ensureYtDlpBinary, hasFfmpeg, resolveCookiesPath, resolveProxyUrl } from './downloader.js';
 import { validateAndSanitizeYouTubeUrl } from './validator.js';
 import { queue } from './queue.js';
 
@@ -90,6 +90,13 @@ app.get(['/', '/api', '/health', '/api/health'], (req, res) => {
     }
   }
 
+  const proxyUrl = resolveProxyUrl();
+  let proxyStatus = 'none';
+  if (proxyUrl) {
+    const masked = proxyUrl.replace(/:\/\/[^:]+:([^@]+)@/, '://***:***@');
+    proxyStatus = `active (${masked})`;
+  }
+
   res.json({
     status: 'ok',
     service: 'YouTube to MP4 Backend API',
@@ -97,6 +104,10 @@ app.get(['/', '/api', '/health', '/api/health'], (req, res) => {
     node: process.version,
     uptime: Math.floor(process.uptime()),
     port: PORT,
+    proxy: {
+      configured: !!proxyUrl,
+      status: proxyStatus
+    },
     cookies: {
       status: cookieStatus,
       entries: cookieEntries,

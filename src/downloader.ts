@@ -220,6 +220,31 @@ export function resolveCookiesPath(): string | null {
   return null;
 }
 
+// Helper: Resolve proxy from environment variables (Webshare, Smartproxy, residential proxies)
+export function resolveProxyUrl(): string | null {
+  const rawProxy = process.env.YT_PROXY ||
+                   process.env.PROXY ||
+                   process.env.HTTP_PROXY ||
+                   process.env.HTTPS_PROXY ||
+                   process.env.ALL_PROXY ||
+                   process.env.PROXY_URL ||
+                   process.env.WEBSHARE_PROXY ||
+                   process.env.SMARTPROXY ||
+                   process.env.SMART_PROXY;
+  if (rawProxy && rawProxy.trim().length > 0) {
+    let p = rawProxy.trim();
+    if ((p.startsWith('"') && p.endsWith('"')) || (p.startsWith("'") && p.endsWith("'"))) {
+      p = p.slice(1, -1).trim();
+    }
+    // Ensure protocol scheme if user entered host:port or user:pass@host:port
+    if (!p.startsWith('http://') && !p.startsWith('https://') && !p.startsWith('socks5://')) {
+      p = `http://${p}`;
+    }
+    return p;
+  }
+  return null;
+}
+
 // -------------------------------------------------------------------
 // Binary Resolvers & Auto-Installers
 // -------------------------------------------------------------------
@@ -518,11 +543,12 @@ export async function executeConversionJob(job: Job) {
     args.push('--extractor-args', 'youtube:player_client=android_vr,ios,mweb,web');
   }
 
-  // Optional proxy routing (residential/datacenter proxy bypass)
-  const proxy = process.env.YT_PROXY || process.env.PROXY || process.env.HTTP_PROXY || process.env.HTTPS_PROXY;
-  if (proxy && proxy.trim().length > 0) {
-    console.log(`[JOB ${job.id}] Routing through configured proxy.`);
-    args.push('--proxy', proxy.trim());
+  // Proxy routing (Webshare, Smartproxy, residential proxies)
+  const proxy = resolveProxyUrl();
+  if (proxy) {
+    const masked = proxy.replace(/:\/\/[^:]+:([^@]+)@/, '://***:***@');
+    console.log(`[JOB ${job.id}] Routing YouTube traffic through proxy: ${masked}`);
+    args.push('--proxy', proxy);
   }
 
   if (isAudio) {
