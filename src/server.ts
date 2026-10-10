@@ -60,14 +60,22 @@ function checkRateLimit(req: Request, maxRequests = 30, windowSeconds = 60): boo
   return true;
 }
 
-// 1. Health Checks
-app.get(['/health', '/api/health'], (req, res) => {
+// 1. Health & Root Info Endpoints (prevents 404 on base URL)
+app.get(['/', '/api', '/health', '/api/health'], (req, res) => {
   res.json({
     status: 'ok',
+    service: 'YouTube to MP4 Backend API',
     timestamp: Date.now(),
     node: process.version,
     uptime: Math.floor(process.uptime()),
-    port: PORT
+    port: PORT,
+    endpoints: {
+      health: 'GET /health',
+      info: 'POST /api/info',
+      convert: 'POST /api/convert',
+      status: 'GET /api/status/:id',
+      download: 'GET /api/download/:id'
+    }
   });
 });
 

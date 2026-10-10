@@ -126,6 +126,54 @@ function downloadGzBinary(url: string, dest: string): Promise<void> {
   });
 }
 
+// Helper: Resolve cookies file from ENV content, ENV path, or local cookies.txt
+let cachedCookiesPath: string | null = null;
+export function resolveCookiesPath(): string | null {
+  if (cachedCookiesPath && fs.existsSync(cachedCookiesPath)) {
+    return cachedCookiesPath;
+  }
+
+  // 1. From environment variable content (ideal for Render dashboard where uploading files isn't possible)
+  const envContent = process.env.YT_COOKIES_CONTENT || process.env.YOUTUBE_COOKIES;
+  if (envContent && envContent.trim().length > 10) {
+    try {
+      if (!fs.existsSync(TEMP_DIR)) {
+        fs.mkdirSync(TEMP_DIR, { recursive: true });
+      }
+      const targetPath = path.join(TEMP_DIR, 'cookies.txt');
+      fs.writeFileSync(targetPath, envContent.trim(), 'utf8');
+      console.log('[COOKIES] Successfully initialized cookies from environment variable.');
+      cachedCookiesPath = targetPath;
+      return targetPath;
+    } catch (err: any) {
+      console.warn('[COOKIES] Could not write cookies from environment:', err.message);
+    }
+  }
+
+  // 2. From environment variable file path
+  if (process.env.YT_COOKIES_PATH && fs.existsSync(path.resolve(process.env.YT_COOKIES_PATH))) {
+    cachedCookiesPath = path.resolve(process.env.YT_COOKIES_PATH);
+    return cachedCookiesPath;
+  }
+
+  // 3. From common file locations
+  const candidates = [
+    path.resolve(process.cwd(), 'cookies.txt'),
+    path.resolve(process.cwd(), '..', 'cookies.txt'),
+    path.join(TEMP_DIR, 'cookies.txt'),
+    path.resolve(process.cwd(), 'bin', 'cookies.txt')
+  ];
+
+  for (const c of candidates) {
+    if (fs.existsSync(c)) {
+      cachedCookiesPath = c;
+      return c;
+    }
+  }
+
+  return null;
+}
+
 // -------------------------------------------------------------------
 // Binary Resolvers & Auto-Installers
 // -------------------------------------------------------------------
@@ -402,14 +450,24 @@ export async function executeConversionJob(job: Job) {
   if (job.format === '4k') heightLimit = 2160;
   if (job.format === '360p') heightLimit = 360;
 
+  const cookiesPath = resolveCookiesPath();
+
   const args: string[] = [
     '--no-playlist',
     '--newline',
     `--max-filesize`, `${MAX_SIZE_MB}M`,
     '--no-check-certificates',
-    '--user-agent', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36',
-    '--extractor-args', 'youtube:player_client=android,web'
+    '--user-agent', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36'
   ];
+
+  if (cookiesPath) {
+    console.log(`[JOB ${job.id}] Authenticating YouTube download with cookies: ${cookiesPath}`);
+    args.push('--cookies', cookiesPath);
+    args.push('--extractor-args', 'youtube:player_client=web,android,ios,mweb');
+  } else {
+    // On datacenter / cloud IPs without cookies, prioritizing iOS client bypasses bot challenges
+    args.push('--extractor-args', 'youtube:player_client=ios,web,mweb');
+  }
 
   if (isAudio) {
     if (ffmpegAvailable) {
@@ -434,10 +492,6 @@ export async function executeConversionJob(job: Job) {
 
   if (ffmpegLocation) {
     args.push('--ffmpeg-location', ffmpegLocation);
-  }
-
-  if (process.env.YT_COOKIES_PATH && fs.existsSync(process.env.YT_COOKIES_PATH)) {
-    args.push('--cookies', process.env.YT_COOKIES_PATH);
   }
 
   args.push('-o', outputFilePath, job.url);
@@ -494,7 +548,7 @@ export async function executeConversionJob(job: Job) {
       if (code === -4058 || (code !== 0 && !fs.existsSync(outputFilePath) && !stderrOutput)) {
         cleanErr = 'Conversion engine was initializing (Exit code -4058). Please retry now.';
       } else if (stderrOutput.includes('Sign in to confirm')) {
-        cleanErr = 'YouTube requires sign-in verification for this specific video. Please try another video.';
+        cleanErr = 'YouTube requires bot verification for this cloud IP. Please provide a cookies.txt file (or set YT_COOKIES_CONTENT in Render environment) to download protected videos, or try another video.';
       } else if (stderrOutput.includes('Private video')) {
         cleanErr = 'This video is private or unavailable.';
       } else if (stderrOutput.includes('Postprocessing') && stderrOutput.includes('ffmpeg')) {
