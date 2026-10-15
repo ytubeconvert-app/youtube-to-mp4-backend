@@ -1,6 +1,6 @@
 FROM node:20-bookworm-slim
 
-# Install system dependencies: Python 3, FFmpeg, CA certificates, curl
+# Install system dependencies: Python 3, FFmpeg, CA certificates, curl, git
 RUN apt-get update && apt-get install -y --no-install-recommends \
     python3 \
     python3-pip \
@@ -8,10 +8,17 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     ffmpeg \
     ca-certificates \
     curl \
+    git \
     && rm -rf /var/lib/apt/lists/*
 
 # Install yt-dlp with EJS dependencies & PO-Token providers
 RUN pip3 install --no-cache-dir --break-system-packages --upgrade "yt-dlp[default]" yt-dlp-ejs bgutil-ytdlp-pot-provider
+
+# Build official bgutil PO-Token provider server for generating Proof-of-Origin tokens on cloud IPs
+RUN git clone https://github.com/Brainicism/bgutil-ytdlp-pot-provider.git /app/pot-provider && \
+    cd /app/pot-provider/server && \
+    npm ci && \
+    npx tsc
 
 WORKDIR /app
 
@@ -30,6 +37,7 @@ ENV NODE_ENV=production
 ENV PORT=8787
 ENV HOST=0.0.0.0
 ENV TEMP_DIR=/app/temp_downloads
+ENV YT_DLP_POT_PROVIDER_URL=http://127.0.0.1:4416
 
 EXPOSE 8787
 

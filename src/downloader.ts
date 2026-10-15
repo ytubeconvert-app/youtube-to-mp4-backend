@@ -609,16 +609,33 @@ export async function executeConversionJob(job: Job) {
   }
 
   // Multi-tier bypass strategies:
-  // 1. Authenticated session (if cookies provided) with mobile-first clients
-  // 2. Anonymous Mobile client (iOS/Android) without desktop cookies (avoids session poisoning on datacenter IPs)
-  // 3. Embedded / VR device client
+  // 1. PO-Token Verified Web Client (uses local bgutil daemon to generate genuine Botguard PO tokens)
+  // 2. Authenticated session (if cookies provided) with mobile-first clients
+  // 3. Anonymous Mobile client (iOS/Android) without desktop cookies (avoids session poisoning on datacenter IPs)
+  // 4. Embedded / VR device client
   interface Strategy {
     name: string;
     useCookies: boolean;
     playerClients: string;
+    extraArgs?: string[];
   }
 
+  const potProviderUrl = process.env.YT_DLP_POT_PROVIDER_URL || 'http://127.0.0.1:4416';
+  const hasPotDaemon = fs.existsSync('/app/pot-provider/server/build/main.js') ||
+                       fs.existsSync(path.resolve(process.cwd(), 'pot-provider', 'server', 'build', 'main.js')) ||
+                       !!process.env.YT_DLP_POT_PROVIDER_URL;
+
   const strategies: Strategy[] = [];
+
+  // Stage 1: PO-Token Assisted Client (Solves YouTube bot verification on cloud IPs!)
+  if (hasPotDaemon) {
+    strategies.push({
+      name: 'PO-Token Guarded Web Client (Botguard Verified)',
+      useCookies: !!cookiesPath,
+      playerClients: 'web,mweb',
+      extraArgs: ['--extractor-args', `youtubepot-bgutilhttp:base_url=${potProviderUrl}`]
+    });
+  }
 
   if (cookiesPath) {
     strategies.push({
@@ -663,6 +680,10 @@ export async function executeConversionJob(job: Job) {
     }
 
     currentArgs.push('--extractor-args', `youtube:player_client=${strat.playerClients}`);
+
+    if (strat.extraArgs && strat.extraArgs.length > 0) {
+      currentArgs.push(...strat.extraArgs);
+    }
 
     if (proxy) {
       const masked = proxy.replace(/:\/\/[^:]+:([^@]+)@/, '://***:***@');
