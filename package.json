@@ -5,8 +5,7 @@
   "scripts": {
     "build": "tsc",
     "start": "node dist/server.js",
-    "dev": "tsx watch src/server.ts",
-    "tunnel": "node scripts/start-residential-tunnel.js"
+    "dev": "tsx watch src/server.ts"
   },
   "dependencies": {
     "cors": "^2.8.5",
