@@ -4,6 +4,7 @@ import fs from 'node:fs';
 import https from 'node:https';
 import zlib from 'node:zlib';
 import { queue, type Job } from './queue.js';
+import { isRapidApiConfigured, downloadViaRapidApi, fetchRapidApiMetadata } from './rapidapi.js';
 
 const TEMP_DIR = process.env.TEMP_DIR || path.join(process.cwd(), 'temp_downloads');
 const MAX_SIZE_MB = parseInt(process.env.MAX_FILE_SIZE_MB || '1500', 10);
@@ -454,6 +455,13 @@ export async function fetchVideoMetadata(url: string) {
   const match = url.match(/(?:youtu\.be\/|(?:www\.|m\.|music\.)?youtube\.com\/(?:embed\/|v\/|e\/|shorts\/|live\/|watch\?v=|watch\?.+&v=))([a-zA-Z0-9_-]{11})/i);
   const videoId = match ? match[1] : 'video';
 
+  if (isRapidApiConfigured()) {
+    try {
+      const meta = await fetchRapidApiMetadata(videoId);
+      if (meta) return meta;
+    } catch {}
+  }
+
   const defaultFormats = [
     { formatId: '1080p', quality: '1080p Full HD', label: '1080p (MP4)' },
     { formatId: '720p', quality: '720p HD', label: '720p (MP4)' },
@@ -550,6 +558,44 @@ export async function executeConversionJob(job: Job) {
   const extension = isAudio ? 'mp3' : 'mp4';
   const outputFilePath = path.join(TEMP_DIR, `${job.id}.${extension}`);
 
+  // Attempt to resolve or auto-download FFmpeg
+  const ffmpegBin = await ensureFfmpegBinary();
+  const ffmpegAvailable = !!ffmpegBin || (await hasFfmpeg());
+  const ffmpegLocation = getFfmpegDir();
+
+  // Tier 0: RapidAPI Cloud Service (100% bypass of cloud datacenter bot challenges!)
+  if (isRapidApiConfigured()) {
+    try {
+      console.log(`[JOB ${job.id}] Attempting conversion via RapidAPI cloud service...`);
+      const rapidSuccess = await downloadViaRapidApi(
+        job.videoId,
+        job.format,
+        outputFilePath,
+        ffmpegBin || 'ffmpeg',
+        (pct, msg) => {
+          queue.updateJob(job.id, { progress: pct, message: msg });
+        }
+      );
+
+      if (rapidSuccess && fs.existsSync(outputFilePath) && fs.statSync(outputFilePath).size > 1000) {
+        queue.decrementActive();
+        queue.updateJob(job.id, {
+          status: 'completed',
+          progress: 100,
+          outputPath: outputFilePath,
+          message: 'Conversion completed successfully via cloud API!',
+          completedAt: Date.now()
+        });
+        console.log(`[JOB ${job.id}] Successfully completed via RapidAPI. Output saved at: ${outputFilePath}`);
+        return;
+      } else {
+        console.warn(`[JOB ${job.id}] RapidAPI conversion did not return a valid file. Falling back to local/tunnel strategies...`);
+      }
+    } catch (rapidErr: any) {
+      console.warn(`[JOB ${job.id}] RapidAPI notice: ${rapidErr.message}. Falling back to standard strategies.`);
+    }
+  }
+
   let ytDlpBin: string;
   try {
     ytDlpBin = await ensureYtDlpBinary();
@@ -561,11 +607,6 @@ export async function executeConversionJob(job: Job) {
     });
     return;
   }
-
-  // Attempt to resolve or auto-download FFmpeg
-  const ffmpegBin = await ensureFfmpegBinary();
-  const ffmpegAvailable = !!ffmpegBin || (await hasFfmpeg());
-  const ffmpegLocation = getFfmpegDir();
 
   let heightLimit = 1080;
   if (job.format === '720p') heightLimit = 720;

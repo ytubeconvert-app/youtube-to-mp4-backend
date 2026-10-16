@@ -9,6 +9,7 @@ import { startAutoCleaner } from './cleaner.js';
 import { fetchVideoMetadata, executeConversionJob, ensureYtDlpBinary, hasFfmpeg, resolveCookiesPath, resolveProxyUrl } from './downloader.js';
 import { validateAndSanitizeYouTubeUrl } from './validator.js';
 import { queue } from './queue.js';
+import { isRapidApiConfigured, getRapidApiHost } from './rapidapi.js';
 
 dotenv.config();
 
@@ -140,6 +141,10 @@ app.get(['/', '/api', '/health', '/api/health'], (req, res) => {
     residentialTunnel: {
       configured: !!getResidentialTunnelUrl(),
       url: getResidentialTunnelUrl() ? getResidentialTunnelUrl()!.replace(/:\/\/[^:]+:[^@]+@/, '://***:***@') : null
+    },
+    rapidApi: {
+      configured: isRapidApiConfigured(),
+      host: getRapidApiHost()
     },
     endpoints: {
       health: 'GET /health',
